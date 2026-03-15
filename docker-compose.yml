@@ -1,0 +1,45 @@
+services:
+  neo4j:
+    image: neo4j:5.18
+    container_name: importme_neo4j
+    ports:
+      - '7474:7474'
+      - '7687:7687'
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME}/${NEO4J_PASSWORD}
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USERNAME}", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: importme_backend
+    ports:
+      - '3000:3000'
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: ${NEO4J_USERNAME}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173/import.me}
+      PORT: 3000
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
