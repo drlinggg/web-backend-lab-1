@@ -16,7 +16,7 @@ export class GithubStrategy extends PassportStrategy(Strategy, 'github') {
     super({
       clientID: clientID || 'dummy-client-id',
       clientSecret: clientSecret || 'dummy-client-secret',
-      callbackURL: `${configService.get<string>('BACKEND_URL') || 'http://localhost:3000'}/api/auth/github/callback`,
+      callbackURL: `${configService.get<string>('BACKEND_URL') || 'https://web-backend-lab-1drlinggg.onrender.com'}/api/auth/github/callback`,
       scope: ['user:email', 'read:user', 'repo'],
     });
   }
