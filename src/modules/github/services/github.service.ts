@@ -15,6 +15,10 @@ export class GithubService {
     return token ? { Authorization: `token ${token}` } : {};
   }
 
+  private tokenHeaders(accessToken: string): Record<string, string> {
+    return { Authorization: `token ${accessToken}` };
+  }
+
   async getLatestCommit(owner: string, repo: string) {
     try {
       const response = await firstValueFrom(
@@ -59,6 +63,23 @@ export class GithubService {
     }
 
     return files;
+  }
+
+  /**
+   * Fetch all repositories for an authenticated user via their GitHub access token.
+   */
+  async getUserRepositoriesFromGithub(accessToken: string): Promise<any[]> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(
+          'https://api.github.com/user/repos?per_page=100&sort=pushed&type=all',
+          { headers: this.tokenHeaders(accessToken) },
+        ),
+      );
+      return response.data;
+    } catch {
+      return [];
+    }
   }
 
   private async fetchTree(owner: string, repo: string, branch: string) {

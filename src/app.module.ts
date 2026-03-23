@@ -7,19 +7,18 @@ import { AuthModule } from './modules/auth/auth.module';
 import { UserModule } from './modules/user/user.module';
 import { RepositoryModule } from './modules/repository/repository.module';
 import { GithubModule } from './modules/github/github.module';
+import { AdminModule } from './modules/admin/admin.module';
 import configuration from './config/configuration';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
-    }),
+    ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
     DatabaseModule,
     AuthModule,
     UserModule,
     RepositoryModule,
     GithubModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

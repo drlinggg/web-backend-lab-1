@@ -2,6 +2,7 @@ import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { DatabaseService } from '../../database/database.service';
 import { GithubService } from '../../github/services/github.service';
 import { RepositoryService } from './repository.service';
+import { AuthService } from '../../auth/services/auth.service';
 import {
   Repository,
   RepositoryAnalysis,
@@ -17,6 +18,7 @@ export class RepositoryAnalysisService {
     private db: DatabaseService,
     private githubService: GithubService,
     private repositoryService: RepositoryService,
+    private authService: AuthService,
   ) {}
 
   async analyzeRepository(repoUrl: string, userId?: string): Promise<any> {
@@ -70,12 +72,8 @@ export class RepositoryAnalysisService {
     const session = this.db.getSession();
     try {
       const result = await session.run(
-        `
-        MATCH (a:Analysis {repositoryId: $repositoryId})
-        RETURN a
-        ORDER BY a.analyzedAt DESC
-        LIMIT 1
-        `,
+        `MATCH (a:Analysis {repositoryId: $repositoryId})
+         RETURN a ORDER BY a.analyzedAt DESC LIMIT 1`,
         { repositoryId },
       );
 
@@ -107,19 +105,25 @@ export class RepositoryAnalysisService {
       const pythonFiles = await this.githubService.getPythonFiles(owner, repo);
 
       if (pythonFiles.length > 1000) {
-        throw new HttpException(
-          'Repository is too large to analyze',
-          HttpStatus.I_AM_A_TEAPOT,
-        );
+        throw new HttpException('Repository is too large to analyze', HttpStatus.I_AM_A_TEAPOT);
       }
 
       if (!repository) {
         repository = await this.createRepository(owner, repo, userId);
       }
 
+      if (!userId) {
+        const ghostId = await this.authService.findOrCreateGhostUser(owner);
+        await this.db.query(
+          `MATCH (u:User {id: $ghostId}) MATCH (r:Repository {id: $repoId})
+           MERGE (u)-[:OWNS]->(r)`,
+          { ghostId, repoId: repository.id },
+        );
+      }
+
       const graphData = await this.parseDependencies(pythonFiles, repository.id);
 
-      const analysis = await this.saveAnalysis(repository.id, commitHash, graphData);
+      await this.saveAnalysis(repository.id, commitHash, graphData);
 
       await this.updateRepositoryAfterAnalysis(repository.id, commitHash);
 
@@ -155,24 +159,21 @@ export class RepositoryAnalysisService {
       const repoInfo = await this.githubService.getRepositoryInfo(owner, repo);
 
       const result = await session.run(
-        `
-        CREATE (r:Repository {
-          id: $id,
-          name: $repo,
-          fullName: $fullName,
-          description: $description,
-          url: $url,
-          ownerId: $ownerId,
-          ownerName: $owner,
-          viewCount: 0,
-          stars: $stars,
-          forks: $forks,
-          isAnalyzing: true,
-          createdAt: datetime(),
-          updatedAt: datetime()
-        })
-        RETURN r
-        `,
+        `CREATE (r:Repository {
+            id: $id,
+            name: $repo,
+            fullName: $fullName,
+            description: $description,
+            url: $url,
+            ownerId: $ownerId,
+            ownerName: $owner,
+            viewCount: 0,
+            stars: $stars,
+            forks: $forks,
+            isAnalyzing: true,
+            createdAt: datetime(),
+            updatedAt: datetime()
+          }) RETURN r`,
         {
           id,
           repo,
@@ -207,18 +208,15 @@ export class RepositoryAnalysisService {
       const id = uuidv4();
 
       const result = await session.run(
-        `
-        CREATE (a:Analysis {
-          id: $id,
-          repositoryId: $repositoryId,
-          analyzedAt: datetime(),
-          commitHash: $commitHash,
-          graphData: $graphData,
-          modulesCount: $modulesCount,
-          importsCount: $importsCount
-        })
-        RETURN a
-        `,
+        `CREATE (a:Analysis {
+            id: $id,
+            repositoryId: $repositoryId,
+            analyzedAt: datetime(),
+            commitHash: $commitHash,
+            graphData: $graphData,
+            modulesCount: $modulesCount,
+            importsCount: $importsCount
+          }) RETURN a`,
         {
           id,
           repositoryId,
@@ -240,20 +238,15 @@ export class RepositoryAnalysisService {
     }
   }
 
-  private async updateRepositoryAfterAnalysis(
-    repositoryId: string,
-    commitHash: string,
-  ): Promise<void> {
+  private async updateRepositoryAfterAnalysis(repositoryId: string, commitHash: string): Promise<void> {
     const session = this.db.getSession();
     try {
       await session.run(
-        `
-        MATCH (r:Repository {id: $repositoryId})
-        SET r.lastAnalyzedAt = datetime(),
-            r.lastCommitHash = $commitHash,
-            r.isAnalyzing = false,
-            r.updatedAt = datetime()
-        `,
+        `MATCH (r:Repository {id: $repositoryId})
+         SET r.lastAnalyzedAt = datetime(),
+             r.lastCommitHash = $commitHash,
+             r.isAnalyzing = false,
+             r.updatedAt = datetime()`,
         { repositoryId, commitHash },
       );
     } finally {
@@ -264,15 +257,9 @@ export class RepositoryAnalysisService {
   private async updateRepository(repositoryId: string, updates: any): Promise<void> {
     const session = this.db.getSession();
     try {
-      const setClause = Object.keys(updates)
-        .map((key) => `r.${key} = $${key}`)
-        .join(', ');
-
+      const setClause = Object.keys(updates).map((key) => `r.${key} = $${key}`).join(', ');
       await session.run(
-        `
-        MATCH (r:Repository {id: $repositoryId})
-        SET ${setClause}, r.updatedAt = datetime()
-        `,
+        `MATCH (r:Repository {id: $repositoryId}) SET ${setClause}, r.updatedAt = datetime()`,
         { repositoryId, ...updates },
       );
     } finally {
@@ -284,31 +271,22 @@ export class RepositoryAnalysisService {
     const session = this.db.getSession();
     try {
       const result = await session.run(
-        `
-        MATCH (r:Repository {fullName: $fullName})
-        RETURN r.lastAnalyzedAt as lastAnalyzed, r.isAnalyzing as isAnalyzing
-        `,
+        `MATCH (r:Repository {fullName: $fullName})
+         RETURN r.lastAnalyzedAt as lastAnalyzed, r.isAnalyzing as isAnalyzing`,
         { fullName: `${owner}/${repo}` },
       );
 
       if (result.records.length > 0) {
         const isAnalyzing = result.records[0].get('isAnalyzing');
         if (isAnalyzing) {
-          throw new HttpException(
-            'Repository is already being analyzed',
-            HttpStatus.TOO_MANY_REQUESTS,
-          );
+          throw new HttpException('Repository is already being analyzed', HttpStatus.TOO_MANY_REQUESTS);
         }
 
         const lastAnalyzed = result.records[0].get('lastAnalyzed');
         if (lastAnalyzed) {
-          const minutesSinceLast =
-            (Date.now() - new Date(lastAnalyzed).getTime()) / 60000;
+          const minutesSinceLast = (Date.now() - new Date(lastAnalyzed).getTime()) / 60000;
           if (minutesSinceLast < 5) {
-            throw new HttpException(
-              'Please wait before analyzing again',
-              HttpStatus.TOO_MANY_REQUESTS,
-            );
+            throw new HttpException('Please wait before analyzing again', HttpStatus.TOO_MANY_REQUESTS);
           }
         }
       }
@@ -317,17 +295,10 @@ export class RepositoryAnalysisService {
     }
   }
 
-  private async checkAndCreateOwnerRelationship(
-    userId: string,
-    repositoryId: string,
-    owner: string,
-  ) {
+  private async checkAndCreateOwnerRelationship(userId: string, repositoryId: string, owner: string) {
     const session = this.db.getSession();
     try {
-      const result = await session.run(
-        'MATCH (u:User {id: $userId}) RETURN u',
-        { userId },
-      );
+      const result = await session.run('MATCH (u:User {id: $userId}) RETURN u', { userId });
 
       if (result.records.length > 0) {
         const userProps = result.records[0].get('u').properties;
@@ -335,11 +306,8 @@ export class RepositoryAnalysisService {
 
         if (githubUsername === owner) {
           await session.run(
-            `
-            MATCH (u:User {id: $userId})
-            MATCH (r:Repository {id: $repositoryId})
-            MERGE (u)-[:OWNS]->(r)
-            `,
+            `MATCH (u:User {id: $userId}) MATCH (r:Repository {id: $repositoryId})
+             MERGE (u)-[:OWNS]->(r)`,
             { userId, repositoryId },
           );
         }
@@ -358,42 +326,25 @@ export class RepositoryAnalysisService {
   }
 
   /**
-   * Builds a map from fully-qualified Python module name → file path.
-   *
-   * Rules:
-   *   a/b/c.py         → "a.b.c"
-   *   a/b/__init__.py  → "a.b"   (the package, NOT "a.b.__init__")
-   *
-   * No suffix shortcuts are registered: every lookup uses the full dotted
-   * name exactly as written in an import statement.
+   * Builds a map from fully-qualified Python module name to file path.
+   * a/b/c.py → "a.b.c", a/b/__init__.py → "a.b"
    */
   private buildModuleMap(files: any[]): Map<string, string> {
     const moduleMap = new Map<string, string>();
-
     for (const file of files) {
       const withoutExt = file.path.replace(/\.py$/, '');
-
       if (withoutExt.endsWith('/__init__')) {
         const packagePath = withoutExt.replace(/\/__init__$/, '');
-        const packageDotted = packagePath.replace(/\//g, '.');
-        moduleMap.set(packageDotted, file.path);
+        moduleMap.set(packagePath.replace(/\//g, '.'), file.path);
       } else {
-        const dotted = withoutExt.replace(/\//g, '.');
-        moduleMap.set(dotted, file.path);
+        moduleMap.set(withoutExt.replace(/\//g, '.'), file.path);
       }
     }
-
     return moduleMap;
   }
 
   /**
-   * Resolves a relative import (leading dots) to its target file path.
-   *
-   * Examples for file = "myapp/utils/helpers.py":
-   *   "."         → "myapp/utils/__init__.py"
-   *   ".sibling"  → "myapp/utils/sibling.py"
-   *   ".."        → "myapp/__init__.py"
-   *   "..models"  → "myapp/models.py"
+   * Resolves a relative import to its target module name using the source file path.
    */
   private resolveRelativeImport(
     imp: string,
@@ -405,37 +356,24 @@ export class RepositoryAnalysisService {
 
     const dots = dotMatch[1].length;
     const rest = dotMatch[2];
-
-    // For __init__.py the package IS its own directory.
-    // For a regular module the package is its containing directory.
     const isInit = filePath.endsWith('/__init__.py');
     const dir = isInit
       ? filePath.replace(/\/__init__\.py$/, '')
       : filePath.replace(/\/[^/]+\.py$/, '');
 
     const packageParts = dir ? dir.split('/') : [];
-
-    // Each extra dot beyond the first moves one package level up.
     const levelsUp = dots - 1;
     if (levelsUp > packageParts.length) return null;
 
     const baseParts = packageParts.slice(0, packageParts.length - levelsUp);
     const baseModule = baseParts.join('.');
-
-    const targetModule = rest
-      ? baseModule
-        ? `${baseModule}.${rest}`
-        : rest
-      : baseModule;
+    const targetModule = rest ? (baseModule ? `${baseModule}.${rest}` : rest) : baseModule;
 
     if (!targetModule) return null;
     return moduleMap.has(targetModule) ? targetModule : null;
   }
 
-  private async parseDependencies(
-    files: any[],
-    repositoryId: string,
-  ): Promise<DependencyGraph> {
+  private async parseDependencies(files: any[], repositoryId: string): Promise<DependencyGraph> {
     const moduleMap = this.buildModuleMap(files);
 
     const STDLIB = new Set([
@@ -459,7 +397,6 @@ export class RepositoryAnalysisService {
       const name = isInit
         ? withoutExt.replace(/\/__init__$/, '').replace(/\//g, '.')
         : withoutExt.replace(/\//g, '.');
-
       return {
         id: `${repositoryId}-node-${index}`,
         name,
@@ -471,7 +408,6 @@ export class RepositoryAnalysisService {
 
     const pathToNode = new Map<string, GraphNode>(localNodes.map((n) => [n.path, n]));
     const externalNodeMap = new Map<string, GraphNode>();
-
     const edges: GraphEdge[] = [];
     const edgeSet = new Set<string>();
 
@@ -487,21 +423,13 @@ export class RepositoryAnalysisService {
         let importType: GraphEdge['importType'];
 
         if (imp.startsWith('.')) {
-          // ── Relative import ────────────────────────────────────────────
           importType = 'relative';
           const resolvedModule = this.resolveRelativeImport(imp, file.path, moduleMap);
-          if (resolvedModule) {
-            targetPath = moduleMap.get(resolvedModule);
-          }
+          if (resolvedModule) targetPath = moduleMap.get(resolvedModule);
         } else {
-          // ── Absolute import ────────────────────────────────────────────
           importType = 'absolute';
-
-          // 1. Exact match: "a.b.c" → a/b/c.py
           targetPath = moduleMap.get(imp);
 
-          // 2. Prefix walk: "from a.b.c import Foo" can still bind to
-          //    a/b/__init__.py when a/b/c.py does not exist as its own file.
           if (!targetPath) {
             const parts = imp.split('.');
             for (let j = parts.length - 1; j > 0; j--) {
@@ -524,18 +452,12 @@ export class RepositoryAnalysisService {
             edges.push({ source: sourceNode.id, target: targetNode.id, type: 'imports', importType });
           }
         } else if (!imp.startsWith('.')) {
-          // External dependency — only unresolved absolute imports
           const topLevel = imp.split('.')[0];
           if (STDLIB.has(topLevel)) continue;
 
           const extId = `${repositoryId}-ext-${topLevel}`;
           if (!externalNodeMap.has(extId)) {
-            externalNodeMap.set(extId, {
-              id: extId,
-              name: topLevel,
-              path: topLevel,
-              type: 'external' as const,
-            });
+            externalNodeMap.set(extId, { id: extId, name: topLevel, path: topLevel, type: 'external' as const });
           }
           const key = `${sourceNode.id}->${extId}`;
           if (!edgeSet.has(key)) {
@@ -551,11 +473,7 @@ export class RepositoryAnalysisService {
     return { nodes, edges };
   }
 
-  private async saveModulesToNeo4j(
-    repositoryId: string,
-    nodes: GraphNode[],
-    edges: GraphEdge[],
-  ): Promise<void> {
+  private async saveModulesToNeo4j(repositoryId: string, nodes: GraphNode[], edges: GraphEdge[]): Promise<void> {
     const session = this.db.getSession();
     try {
       await session.run(
@@ -565,34 +483,17 @@ export class RepositoryAnalysisService {
 
       for (const node of nodes) {
         await session.run(
-          `
-          MATCH (r:Repository {id: $repositoryId})
-          CREATE (m:Module {
-            id: $id,
-            repositoryId: $repositoryId,
-            name: $name,
-            path: $path,
-            type: $type
-          })
-          CREATE (r)-[:CONTAINS]->(m)
-          `,
-          {
-            repositoryId,
-            id: node.id,
-            name: node.name,
-            path: node.path,
-            type: node.type,
-          },
+          `MATCH (r:Repository {id: $repositoryId})
+           CREATE (m:Module { id: $id, repositoryId: $repositoryId, name: $name, path: $path, type: $type })
+           CREATE (r)-[:CONTAINS]->(m)`,
+          { repositoryId, id: node.id, name: node.name, path: node.path, type: node.type },
         );
       }
 
       for (const edge of edges) {
         await session.run(
-          `
-          MATCH (source:Module {id: $sourceId})
-          MATCH (target:Module {id: $targetId})
-          MERGE (source)-[:IMPORTS]->(target)
-          `,
+          `MATCH (source:Module {id: $sourceId}) MATCH (target:Module {id: $targetId})
+           MERGE (source)-[:IMPORTS]->(target)`,
           { sourceId: edge.source, targetId: edge.target },
         );
       }
@@ -603,13 +504,10 @@ export class RepositoryAnalysisService {
 
   private extractPythonImports(content: string): string[] {
     const imports: string[] = [];
-
     for (const rawLine of content.split('\n')) {
-      // Strip inline comments (sufficient for import lines).
       const line = rawLine.replace(/#.*$/, '').trim();
       if (!line) continue;
 
-      // import a, import a.b.c, import a as x, import a as x, b as y
       const importMatch = line.match(/^import\s+(.+)/);
       if (importMatch) {
         for (const part of importMatch[1].split(',')) {
@@ -619,13 +517,9 @@ export class RepositoryAnalysisService {
         continue;
       }
 
-      // from x import ..., from . import ..., from ..pkg import ...
       const fromMatch = line.match(/^from\s+(\S+)\s+import/);
-      if (fromMatch) {
-        imports.push(fromMatch[1]);
-      }
+      if (fromMatch) imports.push(fromMatch[1]);
     }
-
     return imports;
   }
 }

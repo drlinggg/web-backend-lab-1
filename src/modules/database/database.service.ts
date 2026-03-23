@@ -52,19 +52,19 @@ export class DatabaseService implements OnApplicationShutdown {
   async query(cypher: string, params: any = {}) {
     const session = this.getSession();
     try {
-      console.log('🔍 Cypher Query:', cypher);
-      console.log('📦 Params:', JSON.stringify(params, null, 2));
+      console.log('Cypher Query:', cypher);
+      console.log('Params:', JSON.stringify(params, null, 2));
       
       const start = Date.now();
       const result = await session.run(cypher, params);
       const duration = Date.now() - start;
       
-      console.log(`✅ Query executed in ${duration}ms`);
-      console.log(`📊 Records returned: ${result.records.length}`);
+      console.log(`Query executed in ${duration}ms`);
+      console.log(`Records returned: ${result.records.length}`);
       
       return result;
     } catch (error) {
-      console.error('❌ Neo4j Error:', error);
+      console.error('Neo4j Error:', error);
       throw error;
     } finally {
       await session.close();

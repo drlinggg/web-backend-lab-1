@@ -1,10 +1,4 @@
-import {
-  Controller,
-  Get,
-  Delete,
-  Param,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Delete, Param, UseGuards } from '@nestjs/common';
 import { UserService } from '../services/user.service';
 import { AdminGuard } from '../../auth/guards/admin.guard';
 import { JwtAuthGuard } from '../../auth/guards/jwt.guard';
@@ -24,6 +18,16 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   async getUserRepositories(@CurrentUser() user: any) {
     return this.userService.getUserRepositories(user.id);
+  }
+
+  /**
+   * BFF endpoint: merges GitHub API repos with local Neo4j data.
+   * Falls back to DB-only list if no access token is stored.
+   */
+  @Get('github-repos')
+  @UseGuards(JwtAuthGuard)
+  async getGithubRepos(@CurrentUser() user: any) {
+    return this.userService.getGithubRepos(user.id);
   }
 
   @Get('me')
