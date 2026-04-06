@@ -104,6 +104,13 @@ export class RepositoryAnalysisService {
     try {
       const pythonFiles = await this.githubService.getPythonFiles(owner, repo);
 
+      if (pythonFiles.length === 0) {
+        throw new HttpException(
+          'Repository does not contain any Python code',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+
       if (pythonFiles.length > 1000) {
         throw new HttpException('Repository is too large to analyze', HttpStatus.I_AM_A_TEAPOT);
       }

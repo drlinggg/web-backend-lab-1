@@ -76,7 +76,9 @@ export class GithubService {
           { headers: this.tokenHeaders(accessToken) },
         ),
       );
-      return response.data;
+      return response.data.filter(
+        (repo: any) => repo.language === 'Python',
+      );
     } catch {
       return [];
     }
